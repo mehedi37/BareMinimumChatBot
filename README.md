@@ -45,6 +45,51 @@ A RESTful API for a chatbot built with FastAPI, providing structured endpoints f
 
 - Python 3.8+
 - pip (Python package installer)
+- Ollama (for LLM functionality)
+
+### Installing and Setting up Ollama
+
+Ollama is required to run the local LLM used by the chatbot and summarization features.
+
+#### Windows
+
+```bash
+# Download and install Ollama from the official website
+# https://ollama.com/download/windows
+
+# After installation, pull the required model
+ollama pull llama3:latest
+```
+
+#### macOS
+
+```bash
+# Install Ollama using Homebrew
+brew install ollama
+
+# Or download from the official website
+# https://ollama.com/download/mac
+
+# Pull the required model
+ollama pull llama3:latest
+```
+
+#### Linux
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull the required model
+ollama pull llama3:latest
+```
+
+After installing, make sure the Ollama service is running:
+```bash
+# Start Ollama service
+ollama serve
+```
+The Ollama API should be available at http://localhost:11434
 
 ### Setting Up a Virtual Environment
 
@@ -90,14 +135,14 @@ python -m spacy download en_core_web_sm
 uvicorn main:app --reload
 ```
 
-The API will be available at http://localhost:8000
+The API will be available at http://127.0.0.1:8000
 
 ### API Documentation
 
 FastAPI automatically generates API documentation using Swagger UI and ReDoc:
 
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://127.0.0.1:8000/docs
+- ReDoc: http://127.0.0.1:8000/redoc
 
 ## Environment Variables
 
