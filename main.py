@@ -44,6 +44,7 @@ async def health_check():
         "features": {
             "chat": "Enhanced interactive chatbot with natural responses and topic awareness",
             "summarization": "Content summarization with topic detection and customizable formats",
+            "quiz_generation": "Generate quizzes from content (text, PDF, YouTube) with customizable options",
             "session_management": "Browser-based cookie sessions for seamless user experience"
         }
     }

@@ -85,15 +85,46 @@ class SummaryStyle(str, Enum):
     SIMPLIFIED = "simplified"  # Easy to understand, non-technical
 
 
+class OutputType(str, Enum):
+    """
+    Options for output type
+    """
+    SUMMARY = "summary"  # Generate a summary
+    QUIZ = "quiz"  # Generate a quiz
+
+
+class QuizQuestion(BaseModel):
+    """
+    Model for a quiz question
+    """
+    question: str = Field(..., description="The question text")
+    options: List[str] = Field(..., description="Multiple choice options")
+    correct_answer: int = Field(..., description="Index of the correct answer (0-based)")
+    explanation: Optional[str] = Field(None, description="Explanation of the correct answer")
+
+
+class QuizResponse(BaseModel):
+    """
+    Response model for quiz generation
+    """
+    questions: List[QuizQuestion] = Field(..., description="The generated quiz questions")
+    source_type: str = Field(..., description="Type of the original content (PDF, YouTube, text)")
+    source_info: Dict[str, Any] = Field(..., description="Information about the original source")
+    timestamp: datetime = Field(default_factory=datetime.now, description="When the quiz was generated")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata about the quiz generation")
+
+
 class YouTubeSummaryRequest(BaseModel):
     """
     Request model for summarizing a YouTube video
     """
     video_url: str = Field(..., description="URL of the YouTube video")
+    output_type: OutputType = Field(default=OutputType.SUMMARY, description="Type of output to generate (summary or quiz)")
     summary_length: SummaryLength = Field(default=SummaryLength.MEDIUM, description="Desired length of the summary")
     summary_style: SummaryStyle = Field(default=SummaryStyle.NARRATIVE, description="Style of the summary")
     include_timestamps: bool = Field(default=True, description="Whether to include timestamps in the summary")
     focus_topics: Optional[List[str]] = Field(None, description="Specific topics to focus on in the summary")
+    num_quiz_questions: Optional[int] = Field(5, description="Number of quiz questions to generate (for quiz output)")
 
     @validator('video_url')
     def must_be_youtube_url(cls, v):
@@ -119,10 +150,12 @@ class PDFSummaryRequest(BaseModel):
     """
     Request model for summarizing a PDF document
     """
+    output_type: OutputType = Field(default=OutputType.SUMMARY, description="Type of output to generate (summary or quiz)")
     summary_length: SummaryLength = Field(default=SummaryLength.MEDIUM, description="Desired length of the summary")
     summary_style: SummaryStyle = Field(default=SummaryStyle.NARRATIVE, description="Style of the summary")
     focus_topics: Optional[List[str]] = Field(None, description="Specific topics to focus on in the summary")
     page_range: Optional[str] = Field(None, description="Range of pages to summarize (e.g., '1-5,10,15-20')")
+    num_quiz_questions: Optional[int] = Field(5, description="Number of quiz questions to generate (for quiz output)")
 
 
 class TextSummaryRequest(BaseModel):
@@ -130,9 +163,11 @@ class TextSummaryRequest(BaseModel):
     Request model for summarizing text content
     """
     text: str = Field(..., description="Text content to summarize")
+    output_type: OutputType = Field(default=OutputType.SUMMARY, description="Type of output to generate (summary or quiz)")
     summary_length: SummaryLength = Field(default=SummaryLength.MEDIUM, description="Desired length of the summary")
     summary_style: SummaryStyle = Field(default=SummaryStyle.NARRATIVE, description="Style of the summary")
     focus_topics: Optional[List[str]] = Field(None, description="Specific topics to focus on in the summary")
+    num_quiz_questions: Optional[int] = Field(5, description="Number of quiz questions to generate (for quiz output)")
 
 
 class TimeStampedSection(BaseModel):

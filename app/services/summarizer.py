@@ -1,7 +1,7 @@
 import os
 import re
 import tempfile
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 import uuid
 import validators
@@ -22,7 +22,10 @@ from app.models.schema import (
     TimeStampedSection,
     YouTubeSummaryRequest,
     PDFSummaryRequest,
-    TextSummaryRequest
+    TextSummaryRequest,
+    OutputType,
+    QuizResponse,
+    QuizQuestion
 )
 from app.core.errors import ChatbotException, BadRequestException
 from app.services.ollama_service import OllamaService
@@ -49,9 +52,9 @@ class SummarizerService:
 
         logger.info("SummarizerService initialized")
 
-    async def summarize_youtube_video(self, request: YouTubeSummaryRequest) -> SummaryResponse:
+    async def summarize_youtube_video(self, request: YouTubeSummaryRequest) -> Union[SummaryResponse, QuizResponse]:
         """
-        Summarize a YouTube video using its transcript
+        Summarize a YouTube video using its transcript or create a quiz
         """
         try:
             # Extract video ID from URL
@@ -69,46 +72,77 @@ class SummarizerService:
             formatter = TextFormatter()
             transcript_text = formatter.format_transcript(transcript_list)
 
-            # Extract timestamped sections if requested
-            sections = None
-            if request.include_timestamps:
-                sections = self._extract_timestamped_sections(transcript_list)
+            # Handle based on output type
+            if request.output_type == OutputType.QUIZ:
+                # Generate quiz using Ollama
+                quiz_questions = await self.ollama_service.create_quiz(
+                    content=transcript_text,
+                    num_questions=request.num_quiz_questions or 5,
+                    focus_topics=request.focus_topics
+                )
 
-            # Generate summary using Ollama
-            summary = await self.ollama_service.generate_summary(
-                content=transcript_text,
-                style=request.summary_style.value,
-                length=request.summary_length.value,
-                focus_topics=request.focus_topics
-            )
+                # Convert to QuizQuestion model objects
+                questions = []
+                for q in quiz_questions:
+                    questions.append(QuizQuestion(
+                        question=q["question"],
+                        options=q["options"],
+                        correct_answer=q["correct_answer"],
+                        explanation=q.get("explanation")
+                    ))
 
-            # Extract key points using Ollama
-            key_points = await self.ollama_service.extract_key_points(summary)
+                # Create response
+                return QuizResponse(
+                    questions=questions,
+                    source_type="youtube",
+                    source_info=metadata,
+                    metadata={
+                        "video_id": video_id,
+                        "focus_topics": request.focus_topics,
+                        "num_questions": request.num_quiz_questions
+                    }
+                )
+            else:
+                # Extract timestamped sections if requested
+                sections = None
+                if request.include_timestamps:
+                    sections = self._extract_timestamped_sections(transcript_list)
 
-            # Create response
-            return SummaryResponse(
-                summary=summary,
-                source_type="youtube",
-                source_info=metadata,
-                sections=sections,
-                key_points=key_points,
-                metadata={
-                    "video_id": video_id,
-                    "summary_style": request.summary_style,
-                    "summary_length": request.summary_length,
-                    "focus_topics": request.focus_topics
-                }
-            )
+                # Generate summary using Ollama
+                summary = await self.ollama_service.generate_summary(
+                    content=transcript_text,
+                    style=request.summary_style.value,
+                    length=request.summary_length.value,
+                    focus_topics=request.focus_topics
+                )
+
+                # Extract key points using Ollama
+                key_points = await self.ollama_service.extract_key_points(summary)
+
+                # Create response
+                return SummaryResponse(
+                    summary=summary,
+                    source_type="youtube",
+                    source_info=metadata,
+                    sections=sections,
+                    key_points=key_points,
+                    metadata={
+                        "video_id": video_id,
+                        "summary_style": request.summary_style,
+                        "summary_length": request.summary_length,
+                        "focus_topics": request.focus_topics
+                    }
+                )
 
         except (TranscriptsDisabled, NoTranscriptFound) as e:
             raise BadRequestException(detail=f"Could not retrieve transcript: {str(e)}")
         except Exception as e:
-            logger.error(f"Error summarizing YouTube video: {str(e)}")
-            raise ChatbotException(detail=f"Failed to summarize YouTube video: {str(e)}")
+            logger.error(f"Error processing YouTube video: {str(e)}")
+            raise ChatbotException(detail=f"Failed to process YouTube video: {str(e)}")
 
-    async def summarize_pdf(self, file_content: bytes, request: PDFSummaryRequest) -> SummaryResponse:
+    async def summarize_pdf(self, file_content: bytes, request: PDFSummaryRequest) -> Union[SummaryResponse, QuizResponse]:
         """
-        Summarize a PDF document
+        Summarize a PDF document or create a quiz
         """
         try:
             # Create a temporary file to store the PDF
@@ -125,78 +159,145 @@ class SummarizerService:
             if not text.strip():
                 raise BadRequestException(detail="Could not extract text from PDF. The file may be scanned or protected.")
 
-            # Generate summary using Ollama
-            summary = await self.ollama_service.generate_summary(
-                content=text,
-                style=request.summary_style.value,
-                length=request.summary_length.value,
-                focus_topics=request.focus_topics
-            )
+            # Handle based on output type
+            if request.output_type == OutputType.QUIZ:
+                # Generate quiz using Ollama
+                quiz_questions = await self.ollama_service.create_quiz(
+                    content=text,
+                    num_questions=request.num_quiz_questions or 5,
+                    focus_topics=request.focus_topics
+                )
 
-            # Extract key points using Ollama
-            key_points = await self.ollama_service.extract_key_points(summary)
+                # Convert to QuizQuestion model objects
+                questions = []
+                for q in quiz_questions:
+                    questions.append(QuizQuestion(
+                        question=q["question"],
+                        options=q["options"],
+                        correct_answer=q["correct_answer"],
+                        explanation=q.get("explanation")
+                    ))
 
-            # Create response
-            return SummaryResponse(
-                summary=summary,
-                source_type="pdf",
-                source_info={
-                    "page_count": page_count,
-                    "processed_pages": request.page_range or f"1-{page_count}",
-                    "text_length": len(text)
-                },
-                key_points=key_points,
-                sections=None,  # PDFs don't have timestamped sections
-                metadata={
-                    "summary_style": request.summary_style,
-                    "summary_length": request.summary_length,
-                    "focus_topics": request.focus_topics
-                }
-            )
+                # Create response
+                return QuizResponse(
+                    questions=questions,
+                    source_type="pdf",
+                    source_info={
+                        "page_count": page_count,
+                        "processed_pages": request.page_range or f"1-{page_count}",
+                        "text_length": len(text)
+                    },
+                    metadata={
+                        "focus_topics": request.focus_topics,
+                        "num_questions": request.num_quiz_questions
+                    }
+                )
+            else:
+                # Generate summary using Ollama
+                summary = await self.ollama_service.generate_summary(
+                    content=text,
+                    style=request.summary_style.value,
+                    length=request.summary_length.value,
+                    focus_topics=request.focus_topics
+                )
+
+                # Extract key points using Ollama
+                key_points = await self.ollama_service.extract_key_points(summary)
+
+                # Create response
+                return SummaryResponse(
+                    summary=summary,
+                    source_type="pdf",
+                    source_info={
+                        "page_count": page_count,
+                        "processed_pages": request.page_range or f"1-{page_count}",
+                        "text_length": len(text)
+                    },
+                    key_points=key_points,
+                    sections=None,  # PDFs don't have timestamped sections
+                    metadata={
+                        "summary_style": request.summary_style,
+                        "summary_length": request.summary_length,
+                        "focus_topics": request.focus_topics
+                    }
+                )
 
         except Exception as e:
-            logger.error(f"Error summarizing PDF: {str(e)}")
-            raise ChatbotException(detail=f"Failed to summarize PDF: {str(e)}")
+            logger.error(f"Error processing PDF: {str(e)}")
+            raise ChatbotException(detail=f"Failed to process PDF: {str(e)}")
 
-    async def summarize_text(self, request: TextSummaryRequest) -> SummaryResponse:
+    async def summarize_text(self, request: TextSummaryRequest) -> Union[SummaryResponse, QuizResponse]:
         """
-        Summarize text content
+        Summarize text content or create a quiz
         """
         try:
             if not request.text.strip():
                 raise BadRequestException(detail="Text content cannot be empty")
 
-            # Generate summary using Ollama
-            summary = await self.ollama_service.generate_summary(
-                content=request.text,
-                style=request.summary_style.value,
-                length=request.summary_length.value,
-                focus_topics=request.focus_topics
-            )
+            # Handle based on output type
+            if request.output_type == OutputType.QUIZ:
+                # Generate quiz using Ollama
+                quiz_questions = await self.ollama_service.create_quiz(
+                    content=request.text,
+                    num_questions=request.num_quiz_questions or 5,
+                    focus_topics=request.focus_topics
+                )
 
-            # Extract key points using Ollama
-            key_points = await self.ollama_service.extract_key_points(summary)
+                # Convert to QuizQuestion model objects
+                questions = []
+                for q in quiz_questions:
+                    questions.append(QuizQuestion(
+                        question=q["question"],
+                        options=q["options"],
+                        correct_answer=q["correct_answer"],
+                        explanation=q.get("explanation")
+                    ))
 
-            # Create response
-            return SummaryResponse(
-                summary=summary,
-                source_type="text",
-                source_info={
-                    "text_length": len(request.text),
-                    "word_count": len(request.text.split())
-                },
-                key_points=key_points,
-                sections=None,  # Text doesn't have timestamped sections
-                metadata={
-                    "summary_style": request.summary_style,
-                    "summary_length": request.summary_length,
-                    "focus_topics": request.focus_topics
-                }
-            )
+                # Create response
+                return QuizResponse(
+                    questions=questions,
+                    source_type="text",
+                    source_info={
+                        "text_length": len(request.text),
+                        "word_count": len(request.text.split())
+                    },
+                    metadata={
+                        "focus_topics": request.focus_topics,
+                        "num_questions": request.num_quiz_questions
+                    }
+                )
+            else:
+                # Generate summary using Ollama
+                summary = await self.ollama_service.generate_summary(
+                    content=request.text,
+                    style=request.summary_style.value,
+                    length=request.summary_length.value,
+                    focus_topics=request.focus_topics
+                )
+
+                # Extract key points using Ollama
+                key_points = await self.ollama_service.extract_key_points(summary)
+
+                # Create response
+                return SummaryResponse(
+                    summary=summary,
+                    source_type="text",
+                    source_info={
+                        "text_length": len(request.text),
+                        "word_count": len(request.text.split())
+                    },
+                    key_points=key_points,
+                    sections=None,  # Text doesn't have timestamped sections
+                    metadata={
+                        "summary_style": request.summary_style,
+                        "summary_length": request.summary_length,
+                        "focus_topics": request.focus_topics
+                    }
+                )
 
         except Exception as e:
-            logger.error(f"Error summarizing text: {str(e)}")
-            raise ChatbotException(detail=f"Failed to summarize text: {str(e)}")
+            logger.error(f"Error processing text: {str(e)}")
+            raise ChatbotException(detail=f"Failed to process text: {str(e)}")
 
     async def _fetch_youtube_metadata(self, video_id: str) -> Dict[str, Any]:
         """
@@ -268,7 +369,8 @@ class SummarizerService:
                     transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en-US', 'en-GB', 'en'])
                     return transcript_list
                 except Exception as e:
-                    raise NoTranscriptFound(f"No transcript found for video {video_id}: {str(e)}")
+                    # Create a more specific error message but use the proper exception format
+                    raise ChatbotException(detail=f"No transcript found for video {video_id}: {str(e)}")
         except Exception as e:
             raise ChatbotException(detail=f"Error getting YouTube transcript: {str(e)}")
 
