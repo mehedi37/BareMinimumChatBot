@@ -1,15 +1,17 @@
 import uuid
 import random
 import re
+import os
 import spacy
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from loguru import logger
-
 from app.models.schema import Message, MessageRole, ChatRequest, ChatResponse
 from app.core.errors import ChatbotException
 from app.services.ollama_service import OllamaService
 
+
+env_model = os.getenv('CHATBOT_MODEL')
 
 class ChatbotService:
     """
@@ -20,8 +22,8 @@ class ChatbotService:
         self.sessions: Dict[str, List[Message]] = {}
 
         # Initialize Ollama service
-        self.ollama_service = OllamaService(model_name="llama3:latest")
-        logger.info("Initialized Ollama service with llama3:latest model")
+        self.ollama_service = OllamaService(model_name=env_model)
+        logger.info(f"Initialized Ollama service with {env_model} model")
 
         # Load SpaCy for NLP processing (used for pattern matching and basic NLP tasks)
         try:
@@ -37,6 +39,15 @@ class ChatbotService:
         self._init_knowledge_base()
 
         logger.info("ChatbotService initialized with enhanced response capabilities")
+
+    async def initialize(self):
+        """
+        Properly initialize async components of the service
+        """
+        logger.info("Initializing async components of ChatbotService")
+        # Initialize the Ollama service properly in an async context
+        await self.ollama_service.initialize()
+        logger.info("ChatbotService async initialization complete")
 
     def _init_knowledge_base(self):
         """Initialize the knowledge base with topics and response patterns"""
@@ -146,7 +157,8 @@ class ChatbotService:
             user_message = Message(
                 role=MessageRole.USER,
                 content=request.message,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now(),
+                metadata={}  # Add empty metadata dictionary
             )
 
             # Initialize session if it doesn't exist
@@ -167,7 +179,8 @@ class ChatbotService:
             bot_message = Message(
                 role=MessageRole.BOT,
                 content=response_content,
-                timestamp=datetime.now().isoformat()
+                timestamp=datetime.now(),
+                metadata={}  # Add empty metadata dictionary
             )
 
             # Add bot message to session

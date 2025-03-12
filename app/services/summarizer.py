@@ -30,15 +30,25 @@ from app.models.schema import (
 from app.core.errors import ChatbotException, BadRequestException
 from app.services.ollama_service import OllamaService
 
+env_model = os.getenv('CHATBOT_MODEL')
 
 class SummarizerService:
     """
     Service for handling summarization of different content types
     """
     def __init__(self):
-        # Initialize Ollama service
-        self.ollama_service = OllamaService(model_name="llama3:latest")
-        logger.info("Initialized Ollama service with llama3:latest model for summarization")
+        """Initialize the summarizer service with the Ollama service and YouTube transcripts cache"""
+        logger.info("Initializing SummarizerService...")
+
+        # Get the model name from environment variables
+        env_model = os.getenv('CHATBOT_MODEL')
+
+        # Initialize the Ollama service
+        self.ollama_service = OllamaService(model_name=env_model)
+        logger.info(f"Initialized Ollama service with model: {env_model}")
+
+        # YouTube transcripts cache
+        self.transcripts_cache = {}
 
         # Load SpaCy for basic text processing
         try:
@@ -50,7 +60,16 @@ class SummarizerService:
             os.system("python -m spacy download en_core_web_sm")
             self.nlp = spacy.load("en_core_web_sm")
 
-        logger.info("SummarizerService initialized")
+        logger.info("SummarizerService initialized successfully")
+
+    async def initialize(self):
+        """
+        Properly initialize async components of the service
+        """
+        logger.info("Initializing async components of SummarizerService")
+        # Initialize the Ollama service properly in an async context
+        await self.ollama_service.initialize()
+        logger.info("SummarizerService async initialization complete")
 
     async def summarize_youtube_video(self, request: YouTubeSummaryRequest) -> Union[SummaryResponse, QuizResponse]:
         """
