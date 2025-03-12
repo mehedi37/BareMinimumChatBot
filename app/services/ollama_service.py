@@ -655,8 +655,6 @@ Sentiment:"""
             logger.error(f"Request error: {str(e)}")
             return None
 
-    # Add stub implementations for the quiz generation methods to satisfy linter
-
     async def _create_quiz_template(self,
                                    content: str,
                                    num_questions: int = 5,
@@ -672,16 +670,81 @@ Sentiment:"""
         Returns:
             List of quiz questions with multiple choice options
         """
-        # This is a stub - keep the existing implementation
-        logger.warning("_create_quiz_template called but not fully implemented")
-        return []
+        # Create a system prompt that guides the model through the process
+        prompt = f"""You are a professional quiz creator. Create {num_questions} multiple-choice questions based on the content provided.
+
+For each question, follow this exact structured process:
+1. Identify an important concept or fact from the content
+2. Formulate a clear, concise question about it
+3. Create the correct answer and three incorrect but plausible options
+4. Provide a brief explanation of why the correct answer is right
+
+Your response must be valid JSON in this exact format:
+```json
+[
+  {{
+    "question": "Question text here?",
+    "options": ["Correct option", "Wrong option 1", "Wrong option 2", "Wrong option 3"],
+    "correct_answer": 0,
+    "explanation": "Why the correct answer is right"
+  }},
+  // more questions...
+]
+```
+
+The correct_answer MUST be the index (0-3) of the correct option in the options array.
+
+Make sure:
+- Questions are substantive and test understanding of core concepts
+- Options are all plausible and similar in length and style
+- The correct answer is placed at random positions (not always first)
+- The explanation is factual and informative"""
+
+        if focus_topics:
+            topics_str = ", ".join([f'"{topic}"' for topic in focus_topics])
+            prompt += f"\n\nFocus on these topics: {topics_str}"
+
+        prompt += f"\n\nContent:\n{content}"
+
+        # Get client
+        client = await self._get_client()
+
+        try:
+            # Direct API call
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.5,  # Lower temperature for more factual responses
+                    "num_predict": 4000  # Ensure enough tokens for multiple questions
+                }
+            }
+
+            logger.debug("Sending quiz generation request using template approach")
+            response = await client.post(f"{self.base_url}/api/generate", json=payload)
+
+            if response.status_code == 200:
+                response_data = response.json()
+                response_text = response_data.get("response", "")
+
+                # Process the response to extract JSON
+                return self._process_quiz_response(response_text)
+            else:
+                logger.error(f"API error: {response.status_code} - {response.text}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Template quiz generation error: {str(e)}")
+            return []
 
     async def _create_quiz_concept_based(self,
                                        content: str,
                                        num_questions: int = 5,
                                        focus_topics: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Generate quiz questions using a concept-based approach
+        Generate quiz questions using a concept-based approach that first extracts key concepts
+        and then generates questions about them
 
         Args:
             content: The text content to create a quiz from
@@ -691,16 +754,114 @@ Sentiment:"""
         Returns:
             List of quiz questions with multiple choice options
         """
-        # This is a stub - keep the existing implementation
-        logger.warning("_create_quiz_concept_based called but not fully implemented")
-        return []
+        # First, extract key concepts from the content if focus topics not provided
+        extracted_concepts = focus_topics or []
+
+        if not extracted_concepts:
+            try:
+                # First prompt to extract key concepts
+                concept_prompt = f"""Extract {min(num_questions + 3, 10)} key concepts or facts from the following content.
+Respond with a JSON array of strings, each representing an important concept.
+
+Content:
+{content[:5000]}
+
+Format your response as:
+```json
+["Concept 1", "Concept 2", "Concept 3", ...]
+```"""
+
+                # Get client
+                client = await self._get_client()
+
+                # Direct API call for concept extraction
+                payload = {
+                    "model": self.model_name,
+                    "prompt": concept_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.2,  # Lower temperature for more factual responses
+                        "num_predict": 1000  # Enough tokens for concepts
+                    }
+                }
+
+                logger.debug("Extracting key concepts for quiz generation")
+                response = await client.post(f"{self.base_url}/api/generate", json=payload)
+
+                if response.status_code == 200:
+                    response_data = response.json()
+                    concept_text = response_data.get("response", "")
+
+                    # Extract JSON array from the response
+                    json_match = JSON_BLOCK_PATTERN.search(concept_text)
+                    if json_match:
+                        try:
+                            concepts_json = json_match.group(1)
+                            extracted_concepts = json.loads(concepts_json)
+                            logger.info(f"Extracted {len(extracted_concepts)} concepts for quiz generation")
+                        except json.JSONDecodeError:
+                            logger.warning("Failed to parse extracted concepts JSON")
+
+                    if not extracted_concepts:
+                        # Try simple line splitting as fallback
+                        lines = [line.strip() for line in concept_text.split('\n') if line.strip()]
+                        extracted_concepts = [line for line in lines if not line.startswith('```')][:10]
+            except Exception as e:
+                logger.warning(f"Error extracting concepts: {str(e)}")
+
+        # Now generate questions for each concept
+        if not extracted_concepts:
+            logger.warning("No concepts extracted, falling back")
+            return []
+
+        all_questions = []
+        concepts_to_use = extracted_concepts[:num_questions]
+
+        # Create a batch of prompts for each concept
+        question_prompts = []
+        for concept in concepts_to_use:
+            prompt = f"""Create one multiple-choice question about the concept: "{concept}" based on this content:
+
+{content[:1000]}
+
+Your response must be valid JSON in this format:
+```json
+{{
+  "question": "Question text here?",
+  "options": ["Correct option", "Wrong option 1", "Wrong option 2", "Wrong option 3"],
+  "correct_answer": 0,
+  "explanation": "Why the correct answer is right"
+}}
+```
+
+The correct_answer MUST be the index (0-3) of the correct option in the options array.
+Make sure all options are plausible and the correct answer is factually accurate."""
+
+            question_prompts.append(prompt)
+
+        # Batch process all concept prompts
+        results = await self._batch_process_prompts(question_prompts, temperature=0.5)
+
+        # Process each result
+        for result_text in results:
+            if not result_text:
+                continue
+
+            # Process the response to extract JSON
+            processed_questions = self._process_quiz_response(result_text)
+            if processed_questions:
+                all_questions.extend(processed_questions)
+
+        # Return the questions, limited to the requested number
+        return all_questions[:num_questions]
 
     async def _create_quiz_standard(self,
                                    content: str,
                                    num_questions: int = 5,
                                    focus_topics: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Standard quiz generation approach
+        Standard quiz generation approach - most reliable general method
+        that works with various LLMs
 
         Args:
             content: The text content to create a quiz from
@@ -710,9 +871,325 @@ Sentiment:"""
         Returns:
             List of quiz questions with multiple choice options
         """
-        # This is a stub - keep the existing implementation
-        logger.warning("_create_quiz_standard called but not fully implemented")
-        return []
+        # Create a simple, direct prompt that works with most LLMs
+        prompt = f"""Generate {num_questions} multiple-choice quiz questions based on the following content.
+
+Each question should have:
+1. A clear question
+2. Four possible answer options (A, B, C, D)
+3. Identification of the correct answer
+4. A brief explanation
+
+Format your response as a JSON array:
+```json
+[
+  {{
+    "question": "What is the main topic discussed in the content?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct_answer": 0,
+    "explanation": "Option A is correct because..."
+  }},
+  // more questions...
+]
+```
+
+Make the questions diverse and ensure they test understanding rather than just recall.
+The correct_answer MUST be the index (0-3) of the correct option in the options array."""
+
+        if focus_topics:
+            topics_str = ", ".join([f'"{topic}"' for topic in focus_topics])
+            prompt += f"\n\nFocus on these topics: {topics_str}"
+
+        prompt += f"\n\nContent:\n{content}"
+
+        # Get client
+        client = await self._get_client()
+
+        try:
+            # Direct API call
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,  # Slightly higher temperature for diversity
+                    "num_predict": 4000  # Ensure enough tokens for multiple questions
+                }
+            }
+
+            logger.debug("Sending quiz generation request using standard approach")
+            response = await client.post(f"{self.base_url}/api/generate", json=payload)
+
+            if response.status_code == 200:
+                response_data = response.json()
+                response_text = response_data.get("response", "")
+
+                # Process the response to extract JSON
+                return self._process_quiz_response(response_text)
+            else:
+                logger.error(f"API error: {response.status_code} - {response.text}")
+                return self._create_fallback_questions(content, num_questions)
+
+        except Exception as e:
+            logger.error(f"Standard quiz generation error: {str(e)}")
+            return self._create_fallback_questions(content, num_questions)
+
+    def _process_quiz_response(self, response_text: str) -> List[Dict[str, Any]]:
+        """
+        Process raw response text to extract and validate quiz questions
+
+        Args:
+            response_text: Raw response from LLM
+
+        Returns:
+            List of parsed and validated questions
+        """
+        # Try several methods to parse the JSON
+        try:
+            # Method 1: Look for JSON block in markdown format
+            json_match = JSON_BLOCK_PATTERN.search(response_text)
+            if json_match:
+                try:
+                    questions_json = json_match.group(1)
+                    # Fix common JSON issues like trailing commas
+                    questions_json = TRAILING_COMMA_PATTERN.sub(r'\1', questions_json)
+                    questions = json.loads(questions_json)
+                    return self._validate_and_format_questions(questions)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse JSON block, trying alternative methods")
+
+            # Method 2: Try to find and parse the entire response as JSON
+            try:
+                # Check if the response starts with [ and ends with ]
+                stripped_text = response_text.strip()
+                if stripped_text.startswith('[') and stripped_text.endswith(']'):
+                    # Fix common JSON issues
+                    fixed_json = TRAILING_COMMA_PATTERN.sub(r'\1', stripped_text)
+                    questions = json.loads(fixed_json)
+                    return self._validate_and_format_questions(questions)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse entire response as JSON")
+
+            # Method 3: Try to find JSON object in the text
+            if '{' in response_text and '}' in response_text:
+                try:
+                    # Extract text between the first { and the last }
+                    start_idx = response_text.find('{')
+                    end_idx = response_text.rfind('}') + 1
+                    if start_idx >= 0 and end_idx > start_idx:
+                        potential_json = response_text[start_idx:end_idx]
+                        # Check if it's a single object or an array of objects
+                        if potential_json.startswith('{'):
+                            potential_json = f"[{potential_json}]"  # Wrap in array
+                        # Fix common JSON issues
+                        fixed_json = TRAILING_COMMA_PATTERN.sub(r'\1', potential_json)
+                        questions = json.loads(fixed_json)
+                        return self._validate_and_format_questions(questions)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to extract JSON object from text")
+
+            # Method 4: Attempt to parse a manually constructed JSON from the text
+            questions = self._parse_questions_from_text(response_text)
+            if questions:
+                return questions
+
+            # If all methods fail, return empty list
+            logger.warning("All JSON parsing methods failed")
+            return []
+
+        except Exception as e:
+            logger.error(f"Error processing quiz response: {str(e)}")
+            return []
+
+    def _validate_and_format_questions(self, questions: Any) -> List[Dict[str, Any]]:
+        """
+        Validate and format parsed questions to ensure they match the expected structure
+
+        Args:
+            questions: Parsed JSON data
+
+        Returns:
+            Validated and formatted questions
+        """
+        validated_questions = []
+
+        # Ensure questions is a list
+        if not isinstance(questions, list):
+            if isinstance(questions, dict):
+                # Convert single question dict to list
+                questions = [questions]
+            else:
+                return []
+
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+
+            # Check required fields
+            if 'question' not in q or 'options' not in q:
+                continue
+
+            # Ensure options is a list with at least 2 items
+            if not isinstance(q['options'], list) or len(q['options']) < 2:
+                continue
+
+            # Format question
+            formatted_q = {
+                'question': q.get('question', '').strip(),
+                'options': [str(opt).strip() for opt in q.get('options', [])],
+                'correct_answer': 0,  # Default to first option if not specified
+                'explanation': q.get('explanation', 'No explanation provided').strip()
+            }
+
+            # Handle correct_answer - ensure it's a valid index
+            if 'correct_answer' in q:
+                try:
+                    correct_idx = int(q['correct_answer'])
+                    if 0 <= correct_idx < len(formatted_q['options']):
+                        formatted_q['correct_answer'] = correct_idx
+                except (ValueError, TypeError):
+                    # If correct_answer is a string like "A", "B", etc.
+                    if isinstance(q['correct_answer'], str):
+                        answer_str = q['correct_answer'].upper().strip()
+                        if answer_str in "ABCD":
+                            # Convert A->0, B->1, etc.
+                            correct_idx = ord(answer_str) - ord('A')
+                            if 0 <= correct_idx < len(formatted_q['options']):
+                                formatted_q['correct_answer'] = correct_idx
+
+            # Only add questions with valid content
+            if formatted_q['question'] and len(formatted_q['options']) >= 2:
+                validated_questions.append(formatted_q)
+
+        return validated_questions
+
+    def _parse_questions_from_text(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Parse questions from plain text when JSON parsing fails
+
+        Args:
+            text: Raw text response
+
+        Returns:
+            Extracted questions in the proper format
+        """
+        questions = []
+
+        # Split by numbered patterns like "1.", "Question 1:", etc.
+        question_blocks = re.split(r'(?:\n|^)\s*(?:Q(?:uestion)?\s*\d+[.:]?|[\d]+\s*[).\:])', text)
+        question_blocks = [block.strip() for block in question_blocks if block.strip()]
+
+        for block in question_blocks:
+            try:
+                # Split into lines
+                lines = [line.strip() for line in block.split('\n') if line.strip()]
+
+                if not lines:
+                    continue
+
+                # First line is usually the question
+                question_text = lines[0].rstrip('?:') + '?'
+
+                # Find options - look for lines starting with A, B, C, D
+                options = []
+                correct_idx = 0
+                correct_letter = None
+                explanation = ""
+
+                # Look for lines with option patterns
+                option_lines = []
+                for i, line in enumerate(lines[1:], 1):
+                    # Check for option patterns (A. B. C. D. or A) B) C) D) etc.)
+                    if re.match(r'^[A-D][.):]\s', line):
+                        # Extract the option text, removing the prefix
+                        option_text = re.sub(r'^[A-D][.):]\s*', '', line)
+                        options.append(option_text)
+                        option_lines.append(i)
+
+                        # Check if this option is marked as correct
+                        if '*' in line or '(correct)' in line.lower() or 'correct' in line.lower():
+                            correct_letter = line[0].upper()
+
+                # If we found options
+                if options:
+                    # Look for explanation after the options
+                    if option_lines and option_lines[-1] + 1 < len(lines):
+                        explanation_lines = lines[option_lines[-1] + 1:]
+
+                        # Join explanation lines, ignoring any that look like "correct answer" indicators
+                        explanation = ' '.join([
+                            line for line in explanation_lines
+                            if not re.match(r'^correct\s+answer\s*[:=]', line.lower())
+                        ])
+
+                    # Look for "correct answer" indicator
+                    if not correct_letter:
+                        for line in lines:
+                            match = re.search(r'(?:correct\s+answer\s*[:=]\s*|answer\s*[:=]\s*)([A-D])', line, re.IGNORECASE)
+                            if match:
+                                correct_letter = match.group(1).upper()
+                                break
+
+                    # Convert correct letter to index (A->0, B->1, etc.)
+                    if correct_letter and correct_letter in "ABCD":
+                        correct_idx = ord(correct_letter) - ord('A')
+                        if correct_idx >= len(options):
+                            correct_idx = 0
+
+                    # Create the question dictionary
+                    if len(options) >= 2:
+                        questions.append({
+                            'question': question_text,
+                            'options': options,
+                            'correct_answer': correct_idx,
+                            'explanation': explanation or "No explanation provided"
+                        })
+            except Exception as e:
+                logger.warning(f"Error parsing question block: {str(e)}")
+
+        return questions
+
+    def _create_fallback_questions(self, content: str, num_questions: int = 5) -> List[Dict[str, Any]]:
+        """
+        Create simple fallback questions when all generation methods fail
+
+        Args:
+            content: Content to create questions about
+            num_questions: Number of questions to create
+
+        Returns:
+            List of basic quiz questions
+        """
+        # Extract a few sentences to use in the questions
+        sentences = re.split(r'(?<=[.!?])\s+', content)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 20][:num_questions*2]
+
+        if not sentences:
+            # If no good sentences, create a generic question
+            return [{
+                'question': "What was the main topic of the content?",
+                'options': ["The provided content", "Something else", "None of the above", "Cannot be determined"],
+                'correct_answer': 0,
+                'explanation': "This is a fallback question because the content couldn't be parsed properly."
+            }]
+
+        questions = []
+        for i in range(min(num_questions, len(sentences))):
+            sentence = sentences[i]
+            # Create a simple recall question
+            questions.append({
+                'question': f"According to the content, which of the following statements is true?",
+                'options': [
+                    sentence,
+                    f"The opposite of: {sentence}",
+                    "None of the statements in the content",
+                    "Cannot be determined from the content"
+                ],
+                'correct_answer': 0,
+                'explanation': f"This statement appears in the original content."
+            })
+
+        return questions
 
     # Close client on shutdown
     async def close(self):
